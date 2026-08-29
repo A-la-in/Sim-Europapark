@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Schöner Sim‑Park — Achterbahnen & Hotels</title>
+<style>
+  :root{ --bg:#e7f7ff; --ui: rgba(255,255,255,0.92); --accent:#227; }
+  html,body{ height:100%; margin:0; font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; background:var(--bg); }
+  #app{ display:flex; height:100vh; gap:12px; padding:12px; box-sizing:border-box; }
+  #panel{ width:380px; max-width:36%; background:var(--ui); border-radius:12px; padding:14px; box-shadow:0 12px 36px rgba(0,0,0,0.12); overflow:auto; }
+  h1{ margin:0 0 6px 0; font-size:18px; }
+  .tools{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .tools button{ padding:10px 12px; border-radius:10px; border:1px solid rgba(0,0,0,0.06); background:white; cursor:pointer; font-weight:600; }
+  .tools button.active{ box-shadow:0 6px 18px rgba(34,102,136,0.12); transform:translateY(-2px); outline:2px solid rgba(34,102,136,0.12); }
+  .controls{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .small{ font-size:13px; color:#334; }
+  #canvasWrap{ flex:1; position:relative; display:flex; align-items:center; justify-content:center; }
+  canvas{ border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.12); background:linear-gradient(#eaf9ff,#dff5ff 60%); display:block; }
+  #topbar{ position:absolute; left:50%; transform:translateX(-50%); top:14px; background:var(--ui); padding:8px 12px; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.06); font-weight:600; }
+  footer.note{ position:absolute; right:12px; bottom:12px; background:var(--ui); padding:8px 10px; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.06); font-size:13px; }
+  .legend{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .legend .sw{ width:32px; height:20px; border-radius:6px; border:1px solid rgba(0,0,0,0.06); }
+  .stats{ margin-top:12px; display:grid; gap:6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel" role="region" aria-label="Werkzeuge">
+    <h1>Schöner Sim‑Park (mit Bahnen & Hotels)</h1>
+    <div class="small">Du kannst jetzt Hotels (2×2) bauen und Achterbahnschienen (mehrere Kacheln) legen — Wagen fahren automatisch.</div>
+
+    <div style="margin-top:10px;font-weight:700">Werkzeuge</div>
+    <div class="tools" id="tools"></div>
+
+    <div style="margin-top:8px;font-weight:700">Aktionen</div>
+    <div class="controls">
+      <button id="btnMirror">Spiegel</button>
+      <button id="btnFill">Fläche füllen</button>
+      <button id="btnUndo">Rückgängig</button>
+      <button id="btnSave">Speichern</button>
+      <button id="btnLoad">Laden</button>
+    </div>
+
+    <div class="legend">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#8fe080"></div> Wiese</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#cfcfcf"></div> Weg</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#ffd9a6;border-radius:6px"></div> Gebäude</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#2f8b3a;border-radius:6px"></div> Baum</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#f7e6ff;border-radius:6px"></div> Brunnen</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#f4c2c2;border-radius:6px;border:1px solid #f0a0a0"></div> Hotel (2×2)</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sw" style="background:#cfe0ff;border-radius:6px;border:1px solid #9fbfe0"></div> Achterbahn (Schiene)</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div><strong>Tick:</strong> <span id="tick">0</span></div>
+      <div><strong>Geld:</strong> € <span id="money">2000</span></div>
+      <div><strong>Besucher:</strong> <span id="visitors">0</span></div>
+    </div>
+
+    <div style="margin-top:12px;font-size:13px;color:#445">
+      Steuerung: Linksklick = platzieren, Rechtsklick = löschen, Drag = Pan, Mausrad = Zoom. Strg+Z = Undo. Hotel braucht 2×2 freie Kacheln.
+    </div>
+  </div>
+
+  <div id="canvasWrap">
+    <div id="topbar">Schöner Sim‑Park — jetzt mit Hotels & Achterbahnen</div>
+    <canvas id="c" width="1400" height="880"></canvas>
+    <footer class="note">Platziere Schienen zusammenhängend — Wagen fahren automatisch entlang zusammenhängender Strecken.</footer>
+  </div>
+</div>
+
+<script>
+// Erweiterung der vorherigen Demo: Hotels (2x2) und Achterbahnen (Schienen + Wagen).
+
+// CONFIG
+const GRID_W = 36, GRID_H = 28;
+const TILE_W = 84, TILE_H = 42;
+const INITIAL_MONEY = 2000;
+const TICK_MS = 1200;
+
+// TILE TYPES
+const TYPE = {
+  GRASS:0, PATH:1, BUILDING:2, TREE:3, RIDE:4, FOUNTAIN:5,
+  COASTER:6, HOTEL:7, HOTEL_PART:8, ERASE:99
+};
+
+// drawing function map (HOTEL_PART draws nothing special)
+let types = {
+  [TYPE.GRASS]: { name:'Wiese', draw: drawGrass },
+  [TYPE.PATH]: { name:'Weg', draw: drawPath },
+  [TYPE.BUILDING]: { name:'Gebäude', draw: drawBuilding, pop:4, income:8 },
+  [TYPE.TREE]: { name:'Baum', draw: drawTree },
+  [TYPE.RIDE]: { name:'Attraktion', draw: drawRide, pop:12, income:40 },
+  [TYPE.FOUNTAIN]: { name:'Brunnen', draw: drawFountain },
+  [TYPE.COASTER]: { name:'Achterbahn', draw: drawCoaster },
+  [TYPE.HOTEL]: { name:'Hotel', draw: drawHotel, pop:20, income:30 },
+  [TYPE.HOTEL_PART]: { name:'Hotel-Teil' },
+  [TYPE.ERASE]: { name:'Radierer' }
+};
+
+// STATE
+let map = [];
+let currentTool = TYPE.PATH;
+let money = INITIAL_MONEY;
+let tick = 0;
+let visitorsCount = 0;
+let mirror=false, fillMode=false;
+let history = [];
+
+// coaster runtime data: arrays of track components and cars
+let coasterComponents = []; // [{tiles:[{x,y}], points:[{x,y}], cars:[{t,speed}]}]
+
+// camera
+let cam = { x: 0, y: 0, zoom: 1.0 };
+
+// canvas
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha:false });
+let cssW=1200, cssH=700;
+function resizeCanvas(){
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1000, window.innerWidth - 420);
+  const h = Math.max(620, window.innerHeight - 60);
+  cssW = w; cssH = h;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  canvas.width = Math.floor(w * dpr); canvas.height = Math.floor(h * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.imageSmoothingEnabled = true;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// init map
+for(let x=0;x<GRID_W;x++){ map[x]=[]; for(let y=0;y<GRID_H;y++) map[x][y]=TYPE.GRASS; }
+
+// UI toolbar (inkl. Coaster & Hotel)
+const toolsDiv = document.getElementById('tools');
+const toolOrder = [TYPE.GRASS, TYPE.PATH, TYPE.BUILDING, TYPE.RIDE, TYPE.FOUNTAIN, TYPE.TREE, TYPE.COASTER, TYPE.HOTEL, TYPE.ERASE];
+toolOrder.forEach(t=>{
+  const b = document.createElement('button');
+  b.innerText = types[t].name;
+  b.dataset.t = t;
+  b.onclick = ()=> setTool(Number(b.dataset.t));
+  toolsDiv.appendChild(b);
+});
+function setTool(t){ currentTool=t; document.querySelectorAll('#tools button').forEach(b=>b.classList.toggle('active', Number(b.dataset.t)===t)); }
+setTool(TYPE.PATH);
+document.getElementById('btnMirror').onclick = ()=> mirror = !mirror;
+document.getElementById('btnFill').onclick = ()=> { fillMode = !fillMode; document.getElementById('btnFill').innerText = fillMode ? 'Fläche: AN' : 'Fläche füllen'; };
+document.getElementById('btnUndo').onclick = undo;
+document.getElementById('btnSave').onclick = saveMap;
+document.getElementById('btnLoad').onclick = loadMap;
+
+// input
+let panning=false, lastMouse=null, painting=false;
+canvas.addEventListener('mousedown', (e)=>{
+  const pos = screenToGrid(e.offsetX, e.offsetY);
+  if (e.button===0){
+    if (e.ctrlKey){ panning=true; lastMouse={x:e.clientX,y:e.clientY}; return; }
+    handlePlace(pos.gx,pos.gy,e.shiftKey);
+    painting = true;
+  } else if (e.button===2){
+    handleErase(pos.gx,pos.gy);
+    panning = true; lastMouse={x:e.clientX,y:e.clientY};
+  } else if (e.button===1){
+    panning=true; lastMouse={x:e.clientX,y:e.clientY};
+  }
+});
+canvas.addEventListener('mousemove', (e)=>{
+  if (panning && lastMouse){
+    const dx = (e.clientX - lastMouse.x)/cam.zoom;
+    const dy = (e.clientY - lastMouse.y)/cam.zoom;
+    cam.x += dx; cam.y += dy;
+    lastMouse = {x:e.clientX,y:e.clientY};
+  }
+  if (painting){
+    const pos = screenToGrid(e.offsetX, e.offsetY);
+    handlePlace(pos.gx,pos.gy,true);
+  }
+});
+window.addEventListener('mouseup', ()=>{ panning=false; lastMouse=null; painting=false; });
+canvas.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  cam.zoom *= e.deltaY>0 ? 0.94 : 1.06;
+  cam.zoom = Math.max(0.45, Math.min(2.2, cam.zoom));
+  // zoom to cursor
+  const mx=e.offsetX,my=e.offsetY;
+  const before = screenToGrid(mx,my);
+  const after = screenToGrid(mx,my);
+  cam.x += (after.worldX - before.worldX);
+  cam.y += (after.worldY - before.worldY);
+},{passive:false});
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+window.addEventListener('keydown',(e)=>{ if ((e.ctrlKey||e.metaKey)&&e.key==='z') undo(); });
+
+// history / undo
+function pushHistory(){ const clone=map.map(col=>col.slice()); history.push({map:clone,money}); if (history.length>40) history.shift(); updateCoasters(); }
+function undo(){ const h = history.pop(); if (!h) return; map = h.map; money = h.money; updateCoasters(); }
+
+// placement logic (Hotel occupies 2x2; Coaster tiles are single; costs applied)
+function canPlaceHotel(gx,gy){
+  if (!inBounds(gx,gy)) return false;
+  if (!inBounds(gx+1,gy+1)) return false;
+  const coords = [[gx,gy],[gx+1,gy],[gx,gy+1],[gx+1,gy+1]];
+  return coords.every(([x,y]) => map[x][y] === TYPE.GRASS);
+}
+function placeHotel(gx,gy){
+  const cost = 600;
+  if (money < cost) return;
+  if (!canPlaceHotel(gx,gy)) return;
+  pushHistory();
+  map[gx][gy] = TYPE.HOTEL;
+  map[gx+1][gy] = TYPE.HOTEL_PART;
+  map[gx][gy+1] = TYPE.HOTEL_PART;
+  map[gx+1][gy+1] = TYPE.HOTEL_PART;
+  money -= cost;
+}
+function handlePlace(gx,gy,paintMulti=false){
+  if (!inBounds(gx,gy)) return;
+  if (currentTool === TYPE.ERASE){ pushHistory(); // if erasing a hotel top-left, free its parts
+    if (map[gx][gy] === TYPE.HOTEL){
+      // clear 2x2
+      const bx = gx, by = gy;
+      [[0,0],[1,0],[0,1],[1,1]].forEach(([dx,dy])=>{ if (inBounds(bx+dx,by+dy)) map[bx+dx][by+dy] = TYPE.GRASS; });
+    } else {
+      map[gx][gy] = TYPE.GRASS;
+    }
+    updateCoasters();
+    return;
+  }
+  // HOTEL special
+  if (currentTool === TYPE.HOTEL){
+    placeHotel(gx,gy); return;
+  }
+  // COASTER: single-tile placement like path, cost per tile
+  if (currentTool === TYPE.COASTER){
+    const costPer = 120;
+    if (money < costPer) return;
+    pushHistory();
+    if (fillMode && !paintMulti){
+      const r=3;
+      for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++){
+        const x=gx+dx,y=gy+dy; if (inBounds(x,y) && map[x][y]===TYPE.GRASS) { map[x][y]=TYPE.COASTER; money-=costPer; }
+        if (mirror){ const mx = GRID_W-1 - x; if (inBounds(mx,y) && map[mx][y]===TYPE.GRASS) { map[mx][y]=TYPE.COASTER; money-=costPer; } }
+      }
+    } else {
+      if (map[gx][gy]===TYPE.GRASS){ map[gx][gy]=TYPE.COASTER; money-=costPer; if (mirror){ const mx = GRID_W-1 - gx; if (inBounds(mx,gy) && map[mx][gy]===TYPE.GRASS) map[mx][gy]=TYPE.COASTER; } }
+    }
+    updateCoasters();
+    return;
+  }
+  // other types (building, ride, fountain, tree, path)
+  const cost = (currentTool===TYPE.BUILDING?120:(currentTool===TYPE.RIDE?450:(currentTool===TYPE.FOUNTAIN?60:0)));
+  if (money < cost) return;
+  pushHistory();
+  if (fillMode && !paintMulti){
+    const r=3;
+    for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++){
+      const x=gx+dx,y=gy+dy; if (inBounds(x,y)) map[x][y]=currentTool;
+      if (mirror){ const mx = GRID_W-1 - x; if (inBounds(mx,y)) map[mx][y]=currentTool; }
+    }
+  } else {
+    map[gx][gy]=currentTool;
+    if (mirror){ const mx = GRID_W-1 - gx; if (inBounds(mx,gy)) map[mx][gy]=currentTool; }
+  }
+  updateCoasters();
+}
+function handleErase(gx,gy){ if (!inBounds(gx,gy)) return; pushHistory(); if (map[gx][gy]===TYPE.HOTEL){ // clear 2x2 hotel
+    const bx=gx, by=gy; [[0,0],[1,0],[0,1],[1,1]].forEach(([dx,dy])=>{ if (inBounds(bx+dx,by+dy)) map[bx+dx][by+dy]=TYPE.GRASS; });
+  } else { map[gx][gy]=TYPE.GRASS; } updateCoasters(); }
+
+function inBounds(x,y){ return x>=0 && y>=0 && x<GRID_W && y<GRID_H; }
+
+// coordinate conversions (isometric)
+function gridToWorld(gx,gy){
+  const cx = (GRID_W-1) * TILE_W/2;
+  const sx = (gx - gy) * (TILE_W/2);
+  const sy = (gx + gy) * (TILE_H/2);
+  const worldX = sx - cx;
+  const worldY = sy;
+  return { worldX, worldY };
+}
+function gridToScreen(gx,gy){
+  const w = gridToWorld(gx,gy);
+  const sx = (cssW/2 + (w.worldX + cam.x) * cam.zoom);
+  const sy = (cssH/2 + (w.worldY + cam.y) * cam.zoom);
+  return { x:sx, y:sy };
+}
+function screenToGrid(px,py){
+  const worldX = (px - cssW/2)/cam.zoom - cam.x;
+  const worldY = (py - cssH/2)/cam.zoom - cam.y;
+  const cx = (GRID_W-1) * TILE_W/2;
+  const sx = worldX + cx;
+  const sy = worldY;
+  const gx = Math.round((sx/(TILE_W/2) + sy/(TILE_H/2))/2);
+  const gy = Math.round((sy/(TILE_H/2) - sx/(TILE_W/2))/2);
+  return { worldX, worldY, gx, gy };
+}
+
+// drawing helpers (soft art)
+function drawDiamond(x,y,w,h,fillStyle,strokeStyle,shadow){
+  ctx.save();
+  if (shadow){ ctx.shadowColor = 'rgba(0,0,0,0.18)'; ctx.shadowBlur = Math.max(6,6*cam.zoom); ctx.shadowOffsetY = 2; }
+  ctx.beginPath();
+  ctx.moveTo(x, y - h/2); ctx.lineTo(x + w/2, y); ctx.lineTo(x, y + h/2); ctx.lineTo(x - w/2, y); ctx.closePath();
+  if (fillStyle){ ctx.fillStyle = fillStyle; ctx.fill(); }
+  if (strokeStyle){ ctx.strokeStyle = strokeStyle; ctx.lineWidth = Math.max(1,1.2*cam.zoom); ctx.stroke(); }
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r, fill, stroke){
+  const radius = r || 4;
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+// tile drawing implementations (reuse earlier visuals)
+function drawGrass(x,y,gx,gy){
+  const g = ctx.createLinearGradient(x, y - TILE_H/2, x, y + TILE_H/2);
+  g.addColorStop(0, '#b9f0a5'); g.addColorStop(1, '#74c45e');
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, g, 'rgba(0,0,0,0.05)');
+}
+function drawPath(x,y,gx,gy){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#d9d9d9', 'rgba(0,0,0,0.06)');
+  ctx.save();
+  ctx.beginPath();
+  const w = TILE_W*0.34*cam.zoom, h = TILE_H*0.18*cam.zoom;
+  ctx.moveTo(x - w, y - h); ctx.lineTo(x + w, y - h); ctx.lineTo(x + w, y + h); ctx.lineTo(x - w, y + h); ctx.closePath();
+  ctx.fillStyle = '#bdbdbd'; ctx.fill();
+  ctx.restore();
+}
+function drawTree(x,y,gx,gy){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, null, null);
+  const baseY = y - TILE_H*cam.zoom/2;
+  ctx.save();
+  ctx.fillStyle = '#7a4a2f';
+  roundRect(ctx, x - 4*cam.zoom, baseY - 6*cam.zoom, 8*cam.zoom, 14*cam.zoom, 3*cam.zoom, true, false);
+  const grd = ctx.createRadialGradient(x - 6*cam.zoom, baseY - 22*cam.zoom, 4, x, baseY - 26*cam.zoom, 32*cam.zoom);
+  grd.addColorStop(0, '#e6ffe6'); grd.addColorStop(0.15, '#a7e18a'); grd.addColorStop(1, '#2f8b3a');
+  ctx.fillStyle = grd;
+  ctx.beginPath(); ctx.ellipse(x, baseY - 24*cam.zoom, 26*cam.zoom, 20*cam.zoom, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawBuilding(x,y,gx,gy){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#cfeecf', 'rgba(0,0,0,0.06)', true);
+  const baseY = y - TILE_H*cam.zoom/2;
+  const bw = 44*cam.zoom, bh = 30*cam.zoom;
+  ctx.save();
+  ctx.translate(x, baseY);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(-bw/2 + 6*cam.zoom, -2*cam.zoom + bh*0.6, bw - 8*cam.zoom, 6*cam.zoom);
+  roundRect(ctx, -bw/2, -bh, bw, bh, 6*cam.zoom, true, true);
+  const roofGrad = ctx.createLinearGradient(-bw/2, -bh - 10*cam.zoom, bw/2, -bh + 16*cam.zoom);
+  roofGrad.addColorStop(0,'#ffd29a'); roofGrad.addColorStop(1,'#ffb06a');
+  roundRect(ctx, -bw/2 - 6*cam.zoom, -bh - 22*cam.zoom, bw + 12*cam.zoom, 18*cam.zoom, 8*cam.zoom, true, false);
+  ctx.fillStyle = roofGrad; ctx.fill();
+  ctx.fillStyle = '#aee3ff';
+  for(let i=-1;i<=1;i++){
+    roundRect(ctx, i*14*cam.zoom - 8*cam.zoom, -bh + 6*cam.zoom, 12*cam.zoom, 12*cam.zoom, 3*cam.zoom, true, false);
+  }
+  ctx.restore();
+}
+function drawRide(x,y,gx,gy, tAnim=0){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#bff0c7', 'rgba(0,0,0,0.06)', true);
+  const baseY = y - TILE_H*cam.zoom/2;
+  ctx.save(); ctx.translate(x, baseY - 10*cam.zoom);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.beginPath(); ctx.ellipse(0, 30*cam.zoom, 34*cam.zoom, 10*cam.zoom, 0, 0, Math.PI*2); ctx.fill();
+  ctx.save(); ctx.rotate(tAnim);
+  ctx.lineWidth = Math.max(2,2*cam.zoom); ctx.strokeStyle = '#5a5a5a'; ctx.beginPath(); ctx.arc(0,0,34*cam.zoom,0,Math.PI*2); ctx.stroke();
+  for(let s=0;s<8;s++){ const a=s*Math.PI*2/8; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*34*cam.zoom, Math.sin(a)*34*cam.zoom); ctx.stroke(); }
+  for(let s=0;s<8;s++){ const a=s*Math.PI*2/8; const gxpos=Math.cos(a)*34*cam.zoom, gypos=Math.sin(a)*34*cam.zoom; ctx.save(); ctx.translate(gxpos, gypos); ctx.fillStyle='#ffd4a6'; roundRect(ctx, -6*cam.zoom, -6*cam.zoom, 12*cam.zoom, 10*cam.zoom, 3*cam.zoom, true, false); ctx.restore(); }
+  ctx.restore();
+  roundRect(ctx, -36*cam.zoom, 38*cam.zoom, 72*cam.zoom, 8*cam.zoom, 4*cam.zoom, true, false);
+  ctx.restore();
+}
+function drawFountain(x,y,gx,gy,tAnim=0){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#bff0c7', 'rgba(0,0,0,0.06)', true);
+  const baseY = y - TILE_H*cam.zoom/2; ctx.save(); ctx.translate(x, baseY);
+  ctx.fillStyle = '#f0f8ff'; roundRect(ctx, -14*cam.zoom, -8*cam.zoom, 28*cam.zoom, 8*cam.zoom, 4*cam.zoom, true, true);
+  ctx.fillStyle = 'rgba(150,220,255,0.9)'; ctx.beginPath();
+  const h = 18*cam.zoom + Math.sin(tAnim*2.0)*4*cam.zoom;
+  ctx.ellipse(0, -h/2, 4*cam.zoom, h/2, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// HOTEL drawing: draw only for the top-left tile to avoid duplicate render
+function drawHotel(x,y,gx,gy){
+  // check if this tile is top-left of a hotel block
+  if (!(inBounds(gx+1,gy+1) && map[gx][gy]===TYPE.HOTEL)) {
+    // if it's a part, draw gentle grass base so block area looks consistent
+    drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#f7e6ff', 'rgba(0,0,0,0.04)');
+    return;
+  }
+  // draw 2x2 hotel centered across the 4 tiles:
+  // compute center position (average of 4 tile screens)
+  const s1 = gridToScreen(gx,gy);
+  const s2 = gridToScreen(gx+1,gy);
+  const s3 = gridToScreen(gx,gy+1);
+  const s4 = gridToScreen(gx+1,gy+1);
+  const cx = (s1.x + s2.x + s3.x + s4.x) / 4;
+  const cy = (s1.y + s2.y + s3.y + s4.y) / 4;
+  // base footprint
+  drawDiamond(cx,cy,TILE_W*2*cam.zoom, TILE_H*2*cam.zoom, '#f4c2c2', 'rgba(0,0,0,0.08)', true);
+  ctx.save(); ctx.translate(cx, cy - 10*cam.zoom);
+  // hotel body
+  const bw = 80*cam.zoom, bh = 64*cam.zoom;
+  ctx.fillStyle = '#fff1ee'; roundRect(ctx, -bw/2, -bh, bw, bh, 8*cam.zoom, true, true);
+  // windows grid
+  ctx.fillStyle = '#cfefff';
+  const cols = 4, rows = 3;
+  for(let i=0;i<cols;i++) for(let j=0;j<rows;j++){
+    roundRect(ctx, -bw/2 + 8*cam.zoom + i*(bw-16*cam.zoom)/(cols-1) - 10*cam.zoom, -bh + 12*cam.zoom + j*(bh-28*cam.zoom)/(rows-1), 14*cam.zoom, 14*cam.zoom, 3*cam.zoom, true, false);
+  }
+  // sign
+  ctx.fillStyle = '#f08c8c';
+  roundRect(ctx, -28*cam.zoom, -bh - 18*cam.zoom, 56*cam.zoom, 14*cam.zoom, 6*cam.zoom, true, false);
+  ctx.restore();
+}
+
+// COASTER drawing: show rails on tile
+function drawCoaster(x,y,gx,gy){
+  drawDiamond(x,y,TILE_W*cam.zoom, TILE_H*cam.zoom, '#cfe0ff', 'rgba(0,0,0,0.06)', true);
+  // draw rail centerline
+  ctx.save();
+  ctx.strokeStyle = '#8a6a3d'; ctx.lineWidth = Math.max(2,1.6*cam.zoom);
+  ctx.beginPath();
+  ctx.moveTo(x - 14*cam.zoom, y - 2*cam.zoom);
+  ctx.lineTo(x + 14*cam.zoom, y + 2*cam.zoom);
+  ctx.stroke();
+  // sleepers
+  ctx.lineWidth = Math.max(1,1*cam.zoom); ctx.strokeStyle='#7a5a3d';
+  for(let i=-12;i<=12;i+=6){
+    ctx.beginPath(); ctx.moveTo(x + i*cam.zoom - 2*cam.zoom, y - 6*cam.zoom); ctx.lineTo(x + i*cam.zoom + 2*cam.zoom, y + 6*cam.zoom); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// draw tile dispatcher
+function drawTileAt(gx,gy, tAnim){
+  const screen = gridToScreen(gx,gy);
+  const x = screen.x, y = screen.y;
+  const type = map[gx][gy];
+  switch(type){
+    case TYPE.GRASS: drawGrass(x,y,gx,gy); break;
+    case TYPE.PATH: drawPath(x,y,gx,gy); break;
+    case TYPE.TREE: drawTree(x,y,gx,gy); break;
+    case TYPE.BUILDING: drawBuilding(x,y,gx,gy); break;
+    case TYPE.RIDE: drawRide(x,y,gx,gy,tAnim); break;
+    case TYPE.FOUNTAIN: drawFountain(x,y,gx,gy,tAnim); break;
+    case TYPE.COASTER: drawCoaster(x,y,gx,gy); break;
+    case TYPE.HOTEL: drawHotel(x,y,gx,gy); break;
+    case TYPE.HOTEL_PART: drawHotel(x,y,gx,gy); break;
+    default: drawGrass(x,y,gx,gy);
+  }
+}
+
+// VISITORS (unchanged core, but cap influenced by hotels)
+let visitors = [];
+function spawnVisitor(){ const freeX = Math.floor(Math.random()*GRID_W); const freeY = Math.floor(Math.random()*GRID_H); visitors.push({ x: freeX + 0.5, y: freeY + 0.5, target:null, speed: 0.4 + Math.random()*0.8 }); }
+function updateVisitors(dt){
+  const hotelCount = countHotels();
+  const desired = Math.min(120, 6 + Math.floor((countTiles(TYPE.BUILDING)+countTiles(TYPE.RIDE)) + hotelCount*2));
+  while(visitors.length < desired) spawnVisitor();
+  visitorsCount = visitors.length;
+  for(let v of visitors){
+    if (!v.target || Math.random() < 0.007) {
+      let choices = [];
+      for(let x=0;x<GRID_W;x++) for(let y=0;y<GRID_H;y++){
+        if (map[x][y]===TYPE.PATH || map[x][y]===TYPE.RIDE || map[x][y]===TYPE.FOUNTAIN) choices.push([x,y]);
+      }
+      if (choices.length>0) v.target = choices[Math.floor(Math.random()*choices.length)];
+      else v.target = [Math.floor(Math.random()*GRID_W), Math.floor(Math.random()*GRID_H)];
+    }
+    const tx = v.target[0] + 0.5, ty = v.target[1] + 0.5;
+    const dx = tx - v.x, dy = ty - v.y;
+    const dist = Math.hypot(dx,dy);
+    if (dist > 0.15){
+      v.x += (dx/dist) * v.speed * (dt*0.001);
+      v.y += (dy/dist) * v.speed * (dt*0.001);
+    } else {
+      if (Math.random() < 0.02) v.target = null;
+    }
+  }
+}
+function drawVisitors(tAnim){
+  for(let v of visitors){
+    const screen = gridToScreen(v.x - 0.5, v.y - 0.5);
+    ctx.save();
+    ctx.fillStyle = '#ffce7b';
+    ctx.beginPath();
+    ctx.ellipse(screen.x, screen.y - 12*cam.zoom, 6*cam.zoom, 8*cam.zoom, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function countTiles(t){ let c=0; for(let x=0;x<GRID_W;x++) for(let y=0;y<GRID_H;y++) if(map[x][y]===t) c++; return c; }
+function countHotels(){ let c=0; for(let x=0;x<GRID_W;x++) for(let y=0;y<GRID_H;y++) if(map[x][y]===TYPE.HOTEL) c++; return c; }
+
+// SIMULATION tick for economy
+function simTick(){ tick++; let income = 0;
+  for(let x=0;x<GRID_W;x++) for(let y=0;y<GRID_H;y++){
+    if (map[x][y]===TYPE.BUILDING) income += (types[TYPE.BUILDING].income || 0);
+    if (map[x][y]===TYPE.RIDE) income += (types[TYPE.RIDE].income || 0);
+    if (map[x][y]===TYPE.HOTEL) income += (types[TYPE.HOTEL].income || 0); // top-left counts as one hotel
+  }
+  money += income;
+}
+
+// COASTER: build components and manage cars
+function updateCoasters(){
+  coasterComponents = [];
+  const visited = Array.from({length:GRID_W}, ()=>Array(GRID_H).fill(false));
+  for(let x=0;x<GRID_W;x++){
+    for(let y=0;y<GRID_H;y++){
+      if (!visited[x][y] && map[x][y]===TYPE.COASTER){
+        // BFS to collect connected tiles (4-neighbors)
+        const tiles = [];
+        const q = [[x,y]]; visited[x][y]=true;
+        while(q.length){
+          const [cx,cy] = q.shift();
+          tiles.push({x:cx,y:cy});
+          [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+            const nx = cx+dx, ny = cy+dy;
+            if (inBounds(nx,ny) && !visited[nx][ny] && map[nx][ny]===TYPE.COASTER){ visited[nx][ny]=true; q.push([nx,ny]); }
+          });
+        }
+        // create ordered points (greedy nearest neighbor) from tile centers
+        const centers = tiles.map(t => {
+          const s = gridToWorld(t.x,t.y);
+          return { x: s.worldX, y: s.worldY, gx:t.x, gy:t.y };
+        });
+        // order them to make a path
+        const ordered = [];
+        let remaining = centers.slice();
+        let cur = remaining.shift(); ordered.push(cur);
+        while(remaining.length){
+          let bestIdx = 0, bestDist = Infinity;
+          for(let i=0;i<remaining.length;i++){
+            const d = Math.hypot(remaining[i].x-cur.x, remaining[i].y-cur.y);
+            if (d < bestDist){ bestDist = d; bestIdx = i; }
+          }
+          cur = remaining.splice(bestIdx,1)[0]; ordered.push(cur);
+        }
+        // convert ordered world coords into screen-relative points (for animation we use world coords)
+        const points = ordered.map(p => ({x: p.x, y: p.y}));
+        // create component
+        const comp = { tiles, points, cars: [] };
+        // spawn 1 car per component for now
+        comp.cars.push({ t: Math.random(), speed: 0.02 + Math.random()*0.03 });
+        coasterComponents.push(comp);
+      }
+    }
+  }
+}
+
+// convert world coords to screen coords for coaster cars
+function worldToScreen(worldX, worldY){
+  const sx = (cssW/2 + (worldX + cam.x) * cam.zoom);
+  const sy = (cssH/2 + (worldY + cam.y) * cam.zoom);
+  return { x: sx, y: sy };
+}
+
+// advance coaster cars along piecewise-linear path
+function updateCoasterCars(dt){
+  for(const comp of coasterComponents){
+    if (!comp.points || comp.points.length < 2) continue;
+    // compute cumulative lengths
+    const segLen = [];
+    let total = 0;
+    for(let i=0;i<comp.points.length-1;i++){
+      const a = comp.points[i], b = comp.points[i+1];
+      const l = Math.hypot(b.x-a.x, b.y-a.y);
+      segLen.push(l); total += l;
+    }
+    if (total === 0) continue;
+    for(const car of comp.cars){
+      car.t += car.speed * (dt*0.001);
+      if (car.t > 1) car.t -= 1; // loop
+    }
+    // store aux for drawing: car positions in world coords (computed later in draw)
+  }
+}
+
+// draw coaster cars
+function drawCoasterCars(){
+  for(const comp of coasterComponents){
+    if (!comp.points || comp.points.length < 2) continue;
+    // lengths & total
+    const segLen = [];
+    let total = 0;
+    for(let i=0;i<comp.points.length-1;i++){
+      const a = comp.points[i], b = comp.points[i+1];
+      const l = Math.hypot(b.x-a.x, b.y-a.y);
+      segLen.push(l); total += l;
+    }
+    if (total===0) continue;
+    // prefix sums
+    const pref = [0];
+    for(let l of segLen) pref.push(pref[pref.length-1]+l);
+    for(const car of comp.cars){
+      let distance = car.t * total;
+      // find segment
+      let idx = 0;
+      while(idx < segLen.length && distance > pref[idx+1]) idx++;
+      const segStart = comp.points[idx], segEnd = comp.points[idx+1];
+      const segDist = distance - pref[idx];
+      const frac = segLen[idx] > 0 ? segDist / segLen[idx] : 0;
+      const wx = segStart.x + (segEnd.x - segStart.x) * frac;
+      const wy = segStart.y + (segEnd.y - segStart.y) * frac;
+      const screen = worldToScreen(wx, wy);
+      // small car shape
+      ctx.save();
+      ctx.translate(screen.x, screen.y - 16*cam.zoom);
+      ctx.fillStyle = '#ff6b6b';
+      roundRect(ctx, -8*cam.zoom, -6*cam.zoom, 16*cam.zoom, 10*cam.zoom, 3*cam.zoom, true, false);
+      ctx.restore();
+    }
+  }
+}
+
+// rendering loop
+let last = performance.now();
+function render(now){
+  const dt = now - last; last = now;
+  // background
+  const bg = ctx.createLinearGradient(0,0,0,cssH);
+  bg.addColorStop(0,'#eaf9ff'); bg.addColorStop(1,'#dff5ff');
+  ctx.fillStyle = bg; ctx.fillRect(0,0,cssW,cssH);
+  const tAnim = now * 0.001;
+  // draw tiles painter order
+  const total = GRID_W + GRID_H;
+  for(let s=0;s<total;s++){
+    for(let x=0;x<GRID_W;x++){
+      const y = s - x;
+      if (y<0 || y>=GRID_H) continue;
+      drawTileAt(x,y, tAnim);
+    }
+  }
+  // update coaster cars
+  updateCoasterCars(dt);
+  // draw cars on top
+  drawCoasterCars();
+  // visitors
+  updateVisitors(dt);
+  drawVisitors(tAnim);
+  // UI update
+  document.getElementById('tick').innerText = tick;
+  document.getElementById('money').innerText = money;
+  document.getElementById('visitors').innerText = visitorsCount;
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+setInterval(simTick, TICK_MS);
+
+// initial seed with coaster sample and a hotel
+(function seed(){
+  for(let i=12;i<24;i++) map[i][14]=TYPE.PATH;
+  map[18][12]=TYPE.RIDE;
+  map[16][13]=TYPE.BUILDING;
+  map[20][13]=TYPE.BUILDING;
+  map[14][16]=TYPE.FOUNTAIN;
+  for(let i=7;i<10;i++){ map[8+i][18]=TYPE.TREE; }
+  // small coaster loop
+  map[10][8]=TYPE.COASTER; map[11][8]=TYPE.COASTER; map[12][9]=TYPE.COASTER; map[12][10]=TYPE.COASTER; map[11][11]=TYPE.COASTER; map[10][11]=TYPE.COASTER; map[9][10]=TYPE.COASTER; map[9][9]=TYPE.COASTER;
+  // small hotel (2x2) top-left at (22,10)
+  if (canPlaceHotel(22,10)) { pushHistory(); map[22][10]=TYPE.HOTEL; map[23][10]=TYPE.HOTEL_PART; map[22][11]=TYPE.HOTEL_PART; map[23][11]=TYPE.HOTEL_PART; money -= 600; }
+  updateCoasters();
+})();
+
+// painting on drag
+canvas.addEventListener('mousemove',(e)=>{ if (painting){ const p = screenToGrid(e.offsetX,e.offsetY); handlePlace(p.gx,p.gy,true); }});
+canvas.addEventListener('mousedown',(e)=>{ if (e.button===0) painting=true; });
+window.addEventListener('mouseup',()=>painting=false);
+
+// saving/loading
+function saveMap(){ const data = { map, money, tick }; const blob = new Blob([JSON.stringify(data)],{type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download='simpark_with_coasters.json'; a.click(); URL.revokeObjectURL(url); }
+function loadMap(){ const input = document.createElement('input'); input.type='file'; input.accept='.json'; input.onchange = (e)=>{ const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ()=> { try{ const o = JSON.parse(r.result); if (o.map) { map = o.map; money = o.money||INITIAL_MONEY; tick = o.tick||0; updateCoasters(); } }catch(err){ alert('Ungültige Datei'); } }; r.readAsText(f); }; input.click(); }
+
+// build coaster components on start and whenever tracks change
+updateCoasters();
+
+</script>
+</body>
+</html>
